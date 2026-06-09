@@ -3,8 +3,21 @@ import 'package:provider/provider.dart';
 import '../providers/app_state.dart';
 import 'wifi_setup_screen.dart';
 
-class DashboardScreen extends StatelessWidget {
+class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
+
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  final TextEditingController _botTokenController = TextEditingController();
+
+  @override
+  void dispose() {
+    _botTokenController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -65,9 +78,15 @@ class DashboardScreen extends StatelessWidget {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: () {
-                    context.read<AppState>().connectToWiFi();
+                  onPressed: () async {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Connecting to WiFi...')));
+                    final appState = context.read<AppState>();
+                    await appState.connectToWiFi();
+                    if (!appState.isConnected && context.mounted) {
+                      Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(builder: (_) => const WifiSetupScreen()),
+                      );
+                    }
                   },
                   icon: const Icon(Icons.wifi),
                   label: const Text('Connect via WiFi'),
@@ -131,6 +150,45 @@ class DashboardScreen extends StatelessWidget {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     child: const Text('Kirim Alamat IP'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 32),
+              const Text('Telegram Bot Setup', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _botTokenController,
+                      decoration: const InputDecoration(
+                        labelText: 'Bot Token (e.g. 1234:ABC...)',
+                        filled: true,
+                        fillColor: Color(0xFF1E2130),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(12)), borderSide: BorderSide.none),
+                      ),
+                      onSubmitted: (val) {
+                        context.read<AppState>().sendCommand('bot:$val');
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Bot Token dikirim!')));
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton(
+                    onPressed: () {
+                      final val = _botTokenController.text;
+                      if (val.isNotEmpty) {
+                        context.read<AppState>().sendCommand('bot:$val');
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Bot Token dikirim!')));
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF6B48FF),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('Kirim'),
                   ),
                 ],
               ),

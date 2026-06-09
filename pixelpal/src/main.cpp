@@ -5,6 +5,10 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
+#include <Preferences.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -30,15 +34,44 @@ unsigned long nextBlinkTime = 0;
 bool isAutoMode = true; // True if random, False if controlled by Mobile App
 bool isBootScreen = true; // Keep IP on screen until a command is received
 bool isInfoMode = false;
+bool isMessageMode = false;
+String currentMessage = "";
+unsigned long messageStartTime = 0;
 String currentWeather = "Loading...";
 unsigned long lastWeatherUpdate = 0;
 bool lastTouchState = LOW;
 unsigned long lastTouchTime = 0;
 
+Preferences preferences;
+WiFiClientSecure secured_client;
+UniversalTelegramBot *bot = nullptr;
+String botToken = "";
+TaskHandle_t TelegramTask;
+
+void telegramPollTask(void * pvParameters);
+
 void handleCommand(String cmd)
 {
   cmd.trim();
   isBootScreen = false; // Hide IP and start face animation on any command
+  
+  if (cmd.startsWith("bot:")) {
+    String token = cmd.substring(4);
+    token.trim();
+    preferences.putString("bot_token", token);
+    botToken = token;
+    secured_client.setInsecure();
+    if (bot != nullptr) delete bot;
+    bot = new UniversalTelegramBot(botToken, secured_client);
+    isAutoMode = false;
+    isSmiling = true;
+    display.clearDisplay();
+    display.setCursor(0, 10);
+    display.println("Telegram Bot Set!");
+    display.display();
+    delay(2000);
+    return;
+  }
   
   if (cmd.startsWith("wifi:")) {
     // Expected format: "wifi:SSID:PASSWORD"
@@ -112,6 +145,12 @@ void handleCommand(String cmd)
   {
     targetBlink = 1.0;
     blinkEndTime = millis() + 150;
+  }
+  else if (cmd.startsWith("msg:"))
+  {
+    isMessageMode = true;
+    currentMessage = cmd.substring(4);
+    messageStartTime = millis();
   }
   else if (cmd == "auto")
   {
@@ -191,7 +230,7 @@ void drawDashaiFace(float lookOffset, float bobY, bool smiling, float blinkProgr
 void updateWeather() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin("http://wttr.in/?format=%t+%C");
+    http.begin("http://wttr.in/?format=%t");
     http.setUserAgent("curl/7.68.0");
     int httpCode = http.GET();
     if (httpCode > 0) {
@@ -222,7 +261,7 @@ void drawInfoMode(unsigned long currentMillis) {
   strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo); // Just hours and minutes is nicer
   
   char dayStr[10];
-  strftime(dayStr, sizeof(dayStr), "%A", &timeinfo);
+  strftime(dayStr, sizeof(dayStr), "%a", &timeinfo);
   
   char dateStr[20];
   strftime(dateStr, sizeof(dateStr), "%d %b %Y", &timeinfo);
@@ -241,14 +280,35 @@ void drawInfoMode(unsigned long currentMillis) {
   display.println(dateStr);
 
   display.setCursor(0, 50);
-  display.print("Weather: ");
+  display.print("Suhu: ");
   display.println(currentWeather);
+}
+
+void drawMessageMode() {
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  
+  display.println("New Message:");
+  display.drawLine(0, 10, 128, 10, WHITE);
+  
+  display.setCursor(0, 15);
+  display.setTextWrap(true);
+  display.println(currentMessage);
+  display.setTextWrap(false);
 }
 
 void setup()
 {
   Serial.begin(115200);
   pinMode(TOUCH_PIN, INPUT);
+
+  preferences.begin("pixelpal", false);
+  botToken = preferences.getString("bot_token", "");
+  if (botToken != "") {
+    secured_client.setInsecure();
+    bot = new UniversalTelegramBot(botToken, secured_client);
+  }
 
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   display.clearDisplay();
@@ -275,6 +335,47 @@ void setup()
   display.print("AP IP: ");
   display.println(WiFi.softAPIP());
   display.display();
+
+  xTaskCreatePinnedToCore(
+      telegramPollTask,
+      "TelegramTask",
+      8192,
+      NULL,
+      1,
+      &TelegramTask,
+      0); // Run on core 0 to not block animation on core 1
+}
+
+void telegramPollTask(void * pvParameters) {
+  for(;;) {
+    if (bot != nullptr && WiFi.status() == WL_CONNECTED) {
+      int numNewMessages = bot->getUpdates(bot->last_message_received + 1);
+      while (numNewMessages) {
+        for (int i = 0; i < numNewMessages; i++) {
+          String text = bot->messages[i].text;
+          String chat_id = bot->messages[i].chat_id;
+          
+          if (text == "/smile") { handleCommand("smile"); bot->sendMessage(chat_id, "Smiling!"); }
+          else if (text == "/normal") { handleCommand("normal"); bot->sendMessage(chat_id, "Normal mode."); }
+          else if (text == "/left") { handleCommand("left"); bot->sendMessage(chat_id, "Looking left."); }
+          else if (text == "/right") { handleCommand("right"); bot->sendMessage(chat_id, "Looking right."); }
+          else if (text == "/blink") { handleCommand("blink"); bot->sendMessage(chat_id, "Blinking!"); }
+          else if (text == "/info") { handleCommand("info"); bot->sendMessage(chat_id, "Info Mode activated."); }
+          else if (text == "/face") { handleCommand("face"); bot->sendMessage(chat_id, "Face Mode activated."); }
+          else if (text == "/auto") { handleCommand("auto"); bot->sendMessage(chat_id, "Auto mode on."); }
+          else if (text == "/help" || text == "/start") {
+            bot->sendMessage(chat_id, "Commands: /smile, /normal, /left, /right, /blink, /info, /face, /auto. Any other text will be displayed on the screen!");
+          }
+          else {
+            handleCommand("msg:" + text);
+            bot->sendMessage(chat_id, "Pesan ditampilkan di PixelPal!");
+          }
+        }
+        numNewMessages = bot->getUpdates(bot->last_message_received + 1);
+      }
+    }
+    vTaskDelay(3000 / portTICK_PERIOD_MS); // Polling interval
+  }
 }
 
 void loop()
@@ -285,7 +386,12 @@ void loop()
   // Touch Handling
   bool touchState = digitalRead(TOUCH_PIN);
   if (touchState == HIGH && lastTouchState == LOW && (currentMillis - lastTouchTime > 500)) {
-    isInfoMode = !isInfoMode;
+    if (isMessageMode) {
+      isMessageMode = false;
+      isInfoMode = false;
+    } else {
+      isInfoMode = !isInfoMode;
+    }
     isBootScreen = false;
     lastTouchTime = currentMillis;
   }
@@ -295,9 +401,15 @@ void loop()
     return; // Don't clear display until a command/touch is received
   }
 
+  if (isMessageMode && currentMillis - messageStartTime > 10000) {
+    isMessageMode = false; // Auto dismiss message after 10 seconds
+  }
+
   display.clearDisplay();
 
-  if (isInfoMode) {
+  if (isMessageMode) {
+    drawMessageMode();
+  } else if (isInfoMode) {
     drawInfoMode(currentMillis);
   } else {
     // 1. Blink Logic (always runs so it looks alive even when controlled)
