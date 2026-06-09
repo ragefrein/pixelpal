@@ -4,6 +4,7 @@
 #include <time.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -28,6 +29,11 @@ unsigned long blinkEndTime = 0;
 unsigned long nextBlinkTime = 0;
 bool isAutoMode = true; // True if random, False if controlled by Mobile App
 bool isBootScreen = true; // Keep IP on screen until a command is received
+bool isInfoMode = false;
+String currentWeather = "Loading...";
+unsigned long lastWeatherUpdate = 0;
+bool lastTouchState = LOW;
+unsigned long lastTouchTime = 0;
 
 void handleCommand(String cmd)
 {
@@ -93,6 +99,14 @@ void handleCommand(String cmd)
   {
     isSmiling = false;
     targetLookOffset = 22;
+  }
+  else if (cmd == "info")
+  {
+    isInfoMode = true;
+  }
+  else if (cmd == "face")
+  {
+    isInfoMode = false;
   }
   else if (cmd == "blink")
   {
@@ -174,6 +188,63 @@ void drawDashaiFace(float lookOffset, float bobY, bool smiling, float blinkProgr
   }
 }
 
+void updateWeather() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin("http://wttr.in/?format=%t+%C");
+    http.setUserAgent("curl/7.68.0");
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      currentWeather = http.getString();
+      currentWeather.trim();
+    }
+    http.end();
+  } else {
+    currentWeather = "No WiFi";
+  }
+}
+
+void drawInfoMode(unsigned long currentMillis) {
+  if (currentWeather == "Loading..." || (currentMillis - lastWeatherUpdate > 1800000)) { // 30 mins
+    updateWeather();
+    lastWeatherUpdate = currentMillis;
+  }
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 50)) {
+    display.setTextSize(1);
+    display.setCursor(0, 20);
+    display.println("Syncing Time...");
+    return;
+  }
+
+  char timeStr[10];
+  strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo); // Just hours and minutes is nicer
+  
+  char dayStr[10];
+  strftime(dayStr, sizeof(dayStr), "%A", &timeinfo);
+  
+  char dateStr[20];
+  strftime(dateStr, sizeof(dateStr), "%d %b %Y", &timeinfo);
+
+  display.setTextSize(3);
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((128 - w) / 2, 5);
+  display.println(timeStr);
+
+  display.setTextSize(1);
+  display.setCursor(0, 35);
+  display.print(dayStr);
+  display.print(", ");
+  display.println(dateStr);
+
+  display.setCursor(0, 50);
+  display.print("Weather: ");
+  display.println(currentWeather);
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -195,6 +266,9 @@ void setup()
   server.on("/api", handleApi);
   server.begin();
 
+  // Setup NTP
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov"); // GMT+7
+
   display.clearDisplay();
   display.setCursor(0, 10);
   display.println("PixelPal Ready!");
@@ -206,16 +280,28 @@ void setup()
 void loop()
 {
   server.handleClient(); // Handle WiFi HTTP requests
+  unsigned long currentMillis = millis();
+
+  // Touch Handling
+  bool touchState = digitalRead(TOUCH_PIN);
+  if (touchState == HIGH && lastTouchState == LOW && (currentMillis - lastTouchTime > 500)) {
+    isInfoMode = !isInfoMode;
+    isBootScreen = false;
+    lastTouchTime = currentMillis;
+  }
+  lastTouchState = touchState;
 
   if (isBootScreen) {
-    return; // Don't clear display or draw eyes until a command is received
+    return; // Don't clear display until a command/touch is received
   }
 
   display.clearDisplay();
-  unsigned long currentMillis = millis();
 
-  // 1. Blink Logic (always runs so it looks alive even when controlled)
-  if (currentMillis >= nextBlinkTime)
+  if (isInfoMode) {
+    drawInfoMode(currentMillis);
+  } else {
+    // 1. Blink Logic (always runs so it looks alive even when controlled)
+    if (currentMillis >= nextBlinkTime)
   {
     targetBlink = 1.0;
     blinkEndTime = currentMillis + 100;
@@ -260,12 +346,13 @@ void loop()
   // 4. Breathing Effect
   float bobY = sin(currentMillis / 400.0) * 2.0;
 
-  drawDashaiFace(faceLookOffset, bobY, isSmiling, currentBlink);
+    drawDashaiFace(faceLookOffset, bobY, isSmiling, currentBlink);
 
-  // Optional: Show tiny indicator if not auto
-  if (!isAutoMode)
-  {
-    display.fillRect(124, 0, 4, 4, WHITE);
+    // Optional: Show tiny indicator if not auto
+    if (!isAutoMode)
+    {
+      display.fillRect(124, 0, 4, 4, WHITE);
+    }
   }
 
   display.display();

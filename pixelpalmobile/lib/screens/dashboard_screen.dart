@@ -92,6 +92,8 @@ class DashboardScreen extends StatelessWidget {
                   _buildExpressionBtn(context, Icons.swipe_left, 'Look Left', 'left', Colors.purple),
                   _buildExpressionBtn(context, Icons.swipe_right, 'Look Right', 'right', Colors.purple),
                   _buildExpressionBtn(context, Icons.autorenew, 'Auto Mode', 'auto', Colors.teal),
+                  _buildExpressionBtn(context, Icons.info_outline, 'Info Mode', 'info', Colors.amber),
+                  _buildExpressionBtn(context, Icons.face, 'Face Mode', 'face', Colors.pink),
                 ],
               ),
               const SizedBox(height: 30),
